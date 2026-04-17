@@ -21,95 +21,87 @@ jobs:
       with:
         xcode-version: latest-stable
 
-    - name: Show Xcode version
+    - name: Show environment info
       run: |
-        echo "Xcode Version:"
+        echo "=== Xcode Version ==="
         xcodebuild -version
         echo ""
-        echo "Available Schemes:"
+        echo "=== Available Schemes ==="
         xcodebuild -list -project msyui.xcodeproj
+        echo ""
+        echo "=== Available Simulators ==="
+        xcrun simctl list devices available | grep iPhone | head -3 || echo "No simulators"
 
-    - name: Create build directory
-      run: mkdir -p build/export
-
-    - name: Build and Archive (for third-party signing)
+    - name: Create build directories
       run: |
-        echo "Starting build process..."
-        set -o pipefail
+        mkdir -p build/export
+        mkdir -p build/temp
 
-        # Build archive without signing
-        xcodebuild archive \
+    - name: Build the app
+      run: |
+        echo "🔨 Building iOS app..."
+
+        # Build the app binary
+        xcodebuild build \
           -project msyui.xcodeproj \
           -scheme msyui \
-          -archivePath build/msyui.xcarchive \
+          -configuration Release \
           -destination 'generic/platform=iOS' \
           CODE_SIGN_IDENTITY="" \
           CODE_SIGNING_REQUIRED=NO \
           CODE_SIGNING_ALLOWED=NO \
-          ENABLE_BITCODE=NO \
-          CODE_SIGN_ENTITLES="" \
-          CODE_SIGNING_ALLOWED=NO \
+          DEVELOPMENT_TEAM="" \
+          CONFIGURATION_BUILD_DIR=build/temp \
           || {
-            echo "❌ Archive creation failed"
+            echo "❌ Build failed"
             exit 1
           }
 
-        echo "✅ Archive created successfully"
+        echo "✅ Build completed"
+        echo "📁 Build output:"
+        ls -la build/temp/
 
-        # Check if archive was created
-        if [ ! -d "build/msyui.xcarchive" ]; then
-          echo "❌ Archive directory not found"
+        # Check if app bundle was created
+        if [ -f "build/temp/msyui.app/msyui" ]; then
+          echo "✅ App executable found"
+          ls -la build/temp/msyui.app/
+        else
+          echo "❌ App bundle not found"
+          echo "🔍 Contents of build/temp:"
+          ls -laR build/temp/
           exit 1
         fi
 
-        echo "📦 Archive contents:"
-        ls -la build/msyui.xcarchive/Products/Applications/ || echo "No applications found"
-
-    - name: Export IPA for third-party signing
+    - name: Create IPA manually
       run: |
-        echo "Starting IPA export..."
+        echo "📦 Creating IPA file manually..."
 
-        # Create a simple export options plist if needed
-        if [ ! -f "ExportOptionsThirdParty.plist" ]; then
-          echo "Creating export options plist..."
-          cat > ExportOptionsThirdParty.plist << 'EOF'
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-            <key>method</key>
-            <string>development</string>
-            <key>signingStyle</key>
-            <string>automatic</string>
-            <key>stripSwiftSymbols</key>
-            <true/>
-            <key>thinning</key>
-            <string>&lt;none&gt;</string>
-        </dict>
-        </plist>
-        EOF
-        fi
+        # Create Payload directory
+        mkdir -p build/export/Payload
 
-        # Export IPA
-        xcodebuild -exportArchive \
-          -archivePath build/msyui.xcarchive \
-          -exportPath build/export \
-          -exportOptionsPlist ExportOptionsThirdParty.plist \
-          || {
-            echo "❌ IPA export failed"
-            exit 1
-          }
+        # Copy the app bundle to Payload
+        if [ -d "build/temp/msyui.app" ]; then
+          echo "📱 Copying app bundle..."
+          cp -r build/temp/msyui.app build/export/Payload/
 
-        echo "✅ IPA exported successfully"
+          # Create the IPA file
+          echo "📦 Creating IPA..."
+          cd build/export
+          zip -qr msyui.ipa Payload/
+          cd ../..
 
-        # Verify IPA file exists
-        if find build/export -name "*.ipa" | grep -q .; then
-          echo "🎉 IPA file created successfully:"
-          find build/export -name "*.ipa" -exec ls -lh {} \;
+          echo "✅ IPA created successfully"
+          echo "📦 IPA file info:"
+          ls -lh build/export/msyui.ipa
+
+          # Verify IPA structure
+          echo "🔍 IPA contents:"
+          unzip -l build/export/msyui.ipa | head -10
+
         else
-          echo "❌ No IPA file found in export directory"
-          echo "📁 Export directory contents:"
-          ls -la build/export/
+          echo "❌ App bundle not found at build/temp/msyui.app"
+          echo "🔍 Available files:"
+          find build/temp -name "*.app" 2>/dev/null || echo "No app bundles found"
           exit 1
         fi
 
@@ -117,21 +109,19 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: msyui-ipa-${{ github.run_number }}
-        path: build/export/*.ipa
+        path: build/export/msyui.ipa
         retention-days: 30
       if: success()
 
-    - name: Upload dSYM artifact
+    - name: Upload app bundle artifact
       uses: actions/upload-artifact@v4
       with:
-        name: msyui-dsym-${{ github.run_number }}
-        path: |
-          build/msyui.xcarchive/dSYMs/**/*.dSYM
-          build/msyui.xcarchive/**/*.app.dSYM
+        name: msyui-app-bundle-${{ github.run_number }}
+        path: build/temp/msyui.app
         retention-days: 30
       if: success()
 
-    - name: Build Summary
+    - name: Create detailed summary
       if: success()
       run: |
         echo "## 🎉 iOS Build Successful!" >> $GITHUB_STEP_SUMMARY
@@ -141,31 +131,41 @@ jobs:
         echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
         echo "- **Branch**: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
         echo "- **Date**: $(date '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+        echo "- **Xcode Version**: $(xcodebuild -version | head -1)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 📥 Artifacts Ready for Download" >> $GITHUB_STEP_SUMMARY
+        echo "### 📥 Available Artifacts" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "#### IPA File" >> $GITHUB_STEP_SUMMARY
-        echo "- **Name**: \`msyui-ipa-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "#### 1. IPA File (Ready for signing)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Artifact Name**: \`msyui-ipa-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
         echo "- **Description**: IPA file ready for third-party signing" >> $GITHUB_STEP_SUMMARY
-        echo "- **Size**: $(find build/export -name "*.ipa" -exec ls -lh {} \; | awk '{print $5}' 2>/dev/null || echo 'N/A')" >> $GITHUB_STEP_SUMMARY
+        echo "- **Size**: $(du -h build/export/msyui.ipa | cut -f1)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Usage**: Download and sign with your certificates" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "#### Symbol Files" >> $GITHUB_STEP_SUMMARY
-        echo "- **Name**: \`msyui-dsym-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
-        echo "- **Description**: Debug symbols for crash analysis" >> $GITHUB_STEP_SUMMARY
+        echo "#### 2. App Bundle (Optional)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Artifact Name**: \`msyui-app-bundle-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Description**: Unsigned .app bundle for advanced usage" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 🔧 How to Use" >> $GITHUB_STEP_SUMMARY
-        echo "1. Download the IPA from the Artifacts section below" >> $GITHUB_STEP_SUMMARY
-        echo "2. Upload to your third-party signing service" >> $GITHUB_STEP_SUMMARY
-        echo "3. Or manually re-sign using your own certificates" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔧 How to Use This IPA" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 📱 Installation Options" >> $GITHUB_STEP_SUMMARY
-        echo "- **Direct Installation**: Install signed IPA directly" >> $GITHUB_STEP_SUMMARY
-        echo "- **AltStore**: Sideload on your personal device" >> $GITHUB_STEP_SUMMARY
-        echo "- **TestFlight**: Upload to App Store Connect" >> $GITHUB_STEP_SUMMARY
-        echo "- **Third-party Platform**: Use services like 蒲公英, Fir.im" >> $GITHUB_STEP_SUMMARY
+        echo "#### For Third-Party Signing:" >> $GITHUB_STEP_SUMMARY
+        echo "1. Download the IPA from artifacts below" >> $GITHUB_STEP_SUMMARY
+        echo "2. Upload to signing service (蒲公英, Fir.im, etc.)" >> $GITHUB_STEP_SUMMARY
+        echo "3. Or manually re-sign:" >> $GITHUB_STEP_SUMMARY
+        echo "   \`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo "   # Unsign old signature" >> $GITHUB_STEP_SUMMARY
+        echo "   codesign --remove-signature msyui.app" >> $GITHUB_STEP_SUMMARY
+        echo "   # Sign with your certificate" >> $GITHUB_STEP_SUMMARY
+        echo "   codesign -f -s \"Your Certificate\" msyui.app" >> $GITHUB_STEP_SUMMARY
+        echo "   # Rebuild IPA" >> $GITHUB_STEP_SUMMARY
+        echo "   zip -r msyui_signed.ipa Payload/" >> $GITHUB_STEP_SUMMARY
+        echo "   \`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "#### For Installation:" >> $GITHUB_STEP_SUMMARY
+        echo "- **AltStore**: Sideload on your device" >> $GITHUB_STEP_SUMMARY
+        echo "- **Sideloadly**: Windows alternative to AltStore" >> $GITHUB_STEP_SUMMARY
+        echo "- **TestFlight**: After proper signing and upload" >> $GITHUB_STEP_SUMMARY
 
-    - name: Build Complete Message
-      if: success()
+    - name: Success message
       run: |
         echo "✅ ======================================="
         echo "✅  Build completed successfully!"
@@ -173,4 +173,5 @@ jobs:
         echo "📦 IPA is ready for third-party signing"
         echo "🔗 Check the Artifacts section to download"
         echo "📱 Artifact name: msyui-ipa-${{ github.run_number }}"
+        echo "💾 Size: $(du -h build/export/msyui.ipa | cut -f1)"
         echo "========================================"
