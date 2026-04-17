@@ -41,7 +41,21 @@ jobs:
       run: |
         echo "🔨 Building iOS app..."
 
-        # Build the app binary
+        # Try building for simulator first, then rebuild for device
+        echo "📱 Building for iOS Simulator..."
+        xcodebuild build \
+          -project msyui.xcodeproj \
+          -scheme msyui \
+          -configuration Release \
+          -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.2' \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          DEVELOPMENT_TEAM="" \
+          CONFIGURATION_BUILD_DIR=build/temp-sim \
+          || echo "⚠️ Simulator build failed, trying device build..."
+
+        echo "📱 Building for iOS Device..."
         xcodebuild build \
           -project msyui.xcodeproj \
           -scheme msyui \
@@ -54,6 +68,8 @@ jobs:
           CONFIGURATION_BUILD_DIR=build/temp \
           || {
             echo "❌ Build failed"
+            echo "🔍 Checking source files..."
+            find . -name "*.swift" -type f | head -5
             exit 1
           }
 
@@ -61,14 +77,21 @@ jobs:
         echo "📁 Build output:"
         ls -la build/temp/
 
-        # Check if app bundle was created
+        # Check if app bundle was created with executable
         if [ -f "build/temp/msyui.app/msyui" ]; then
           echo "✅ App executable found"
+          echo "📱 App bundle contents:"
           ls -la build/temp/msyui.app/
         else
-          echo "❌ App bundle not found"
-          echo "🔍 Contents of build/temp:"
+          echo "❌ App executable not found"
+          echo "🔍 Full contents of build/temp:"
           ls -laR build/temp/
+
+          # Try to find if executable was built elsewhere
+          echo "🔍 Searching for built executable..."
+          find build/temp -name "msyui" -type f
+          find build/temp -name "*.app" -type d
+
           exit 1
         fi
 
