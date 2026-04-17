@@ -1,19 +1,7 @@
 name: iOS Tests (Optional)
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [ main, develop ]
-    paths:
-      - '**.swift'
-      - 'msyuiTests/**'
-      - 'msyuiUITests/**'
-  pull_request:
-    branches: [ main, develop ]
-    paths:
-      - '**.swift'
-      - 'msyuiTests/**'
-      - 'msyuiUITests/**'
+  workflow_dispatch:  # 只允许手动触发
 
 jobs:
   test:
