@@ -1,0 +1,140 @@
+name: iOS CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Tests
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: latest-stable
+
+    - name: Show Xcode version
+      run: xcodebuild -version
+
+    - name: Show available destinations
+      run: xcodebuild -showdestinations -scheme msyui -project msyui.xcodeproj
+
+    - name: Run unit tests
+      run: |
+        xcodebuild test \
+          -project msyui.xcodeproj \
+          -scheme msyui \
+          -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+          -enableCodeCoverage YES \
+          | xcpretty && exit ${PIPESTATUS[0]}
+
+    - name: Run UI tests
+      run: |
+        xcodebuild test \
+          -project msyui.xcodeproj \
+          -scheme msyui \
+          -testPlan msyui \
+          -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+          | xcpretty && exit ${PIPESTATUS[0]}
+      continue-on-error: true
+
+  build:
+    name: Build IPA for Third-party Signing
+    runs-on: macos-latest
+    needs: test
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: latest-stable
+
+    - name: Show Xcode version
+      run: xcodebuild -version
+
+    - name: Import certificates and provisioning profiles
+      if: github.event_name == 'workflow_dispatch'
+      env:
+        CERTIFICATE_BASE64: ${{ secrets.CERTIFICATE_BASE64 }}
+        CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+        PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+      run: |
+        # 创建临时目录
+        mkdir -p ~/Library/MobileDevice/Keychains
+        mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+
+        # 导入证书（如果提供了）
+        if [ -n "$CERTIFICATE_BASE64" ]; then
+          echo "$CERTIFICATE_BASE64" | base64 --decode > certificate.p12
+          security create-keychain -p "" temp.keychain
+          security import certificate.p12 -k ~/Library/Keychains/temp.keychain -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -s ~/Library/Keychains/temp.keychain
+          security default-keychain -s ~/Library/Keychains/temp.keychain
+          security unlock-keychain -p "" ~/Library/Keychains/temp.keychain
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" ~/Library/Keychains/temp.keychain
+        fi
+
+        # 导入配置文件（如果提供了）
+        if [ -n "$PROVISIONING_PROFILE_BASE64" ]; then
+          echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
+        fi
+
+    - name: Build and Archive (for third-party signing)
+      run: |
+        xcodebuild archive \
+          -project msyui.xcodeproj \
+          -scheme msyui \
+          -archivePath build/msyui.xcarchive \
+          -destination 'generic/platform=iOS' \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          ENABLE_BITCODE=NO \
+          | xcpretty && exit ${PIPESTATUS[0]}
+
+    - name: Export IPA for third-party signing
+      run: |
+        xcodebuild -exportArchive \
+          -archivePath build/msyui.xcarchive \
+          -exportPath build/export \
+          -exportOptionsPlist ExportOptionsThirdParty.plist
+
+    - name: Upload IPA artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: msyui-ipa
+        path: build/export/*.ipa
+        retention-days: 30
+
+    - name: Upload dSYM artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: msyui-dsym
+        path: build/msyui.xcarchive/dSYMs/**/*.dSYM
+        retention-days: 30
+
+    - name: Create Release Summary
+      run: |
+        echo "## iOS Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Build completed successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- IPA (ready for third-party signing)" >> $GITHUB_STEP_SUMMARY
+        echo "- dSYM files" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Build Info" >> $GITHUB_STEP_SUMMARY
+        echo "- Date: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Branch: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
