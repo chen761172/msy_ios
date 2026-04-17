@@ -97,7 +97,7 @@ struct WebView: UIViewRepresentable {
 
 struct ContentView: View {
     var body: some View {
-        WebView(url: URL(string: "https://sys-cloud-nt.msyui.com/ht/pages/login/index")!)
+        WebView(url: URL(string: "https://cld-sfdr-rsm.msyui.com/ht/pages/login/index")!)
             .ignoresSafeArea()
     }
 }
